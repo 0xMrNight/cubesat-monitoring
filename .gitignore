@@ -12,7 +12,6 @@ venv/
 env/
 
 # ML artifacts
-*.pkl
 *.joblib
 *.h5
 *.pt
