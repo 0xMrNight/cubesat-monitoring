@@ -1,0 +1,11 @@
+{
+  "battery_voltage": 8.1,
+  "battery_current": 2.0,
+  "solar_power": 20.0,
+  "temperature": 25.0,
+  "signal_strength": -70.0,
+  "packet_loss": 0.5,
+  "gyro_x": 0.05,
+  "gyro_y": 0.03,
+  "gyro_z": 0.02
+}
