@@ -1,5 +1,36 @@
-__pycache__/
-.venv/
-*.py[cod]
-
+# Environment variables
 .env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# ML artifacts
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+
+# Dataset files
+dataset/data/
+dataset/*.csv
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
