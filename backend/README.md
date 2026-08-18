@@ -1,6 +1,6 @@
 # CubeSat Monitoring Backend
 
-The backend contains the server-side logic of the CubeSat Monitoring System. It receives telemetry, performs anomaly detection using the trained Isolation Forest model, identifies affected subsystems using the rule engine, and provides AI-based explanations through the Mission AI Agent.
+Backend receives telemetry, performs anomaly detection using the trained Isolation Forest model, identifies affected subsystems using the rule engine, and provides AI-based explanations through the Mission AI Agent.
 
  Components
 - API – Handles telemetry, anomaly, fault, and AI-agent requests.
