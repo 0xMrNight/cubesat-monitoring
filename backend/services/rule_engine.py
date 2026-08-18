@@ -1,33 +1,55 @@
 def diagnose(packet, analysis):
+    """
+    Analyze anomalous telemetry and identify all affected
+    spacecraft subsystems.
+
+    The ML model is authoritative for anomaly detection.
+    This rule engine only interprets the telemetry evidence.
+    """
+
+    # ==========================================================
+    # NORMAL TELEMETRY
+    # ==========================================================
+
     if not analysis["anomaly"]:
         return {
             "subsystem": None,
+            "affected_subsystems": [],
             "severity": "normal",
-            "reason": "Telemetry is within the learned normal range.",
+            "confidence": 0.0,
+            "evidence": {
+                "thermal": 0.0,
+                "power": 0.0,
+                "communication": 0.0,
+                "attitude": 0.0,
+            },
+            "reasons": {
+                "thermal": [],
+                "power": [],
+                "communication": [],
+                "attitude": [],
+            },
         }
 
     # ==========================================================
-    # 2. CURRENT TELEMETRY VALUES
+    # TELEMETRY
     # ==========================================================
 
     temperature = packet.temperature
 
-    signal_strength = packet.signal_strength
-
-    packet_loss = packet.packet_loss
-
     battery_voltage = packet.battery_voltage
-
     battery_current = packet.battery_current
-
     solar_power = packet.solar_power
+
+    signal_strength = packet.signal_strength
+    packet_loss = packet.packet_loss
 
     gyro_x = packet.gyro_x
     gyro_y = packet.gyro_y
     gyro_z = packet.gyro_z
 
     # ==========================================================
-    # 3. V2.2 ROLLING FEATURES
+    # ROLLING FEATURES FROM V2.2
     # ==========================================================
 
     temperature_mean = analysis[
@@ -43,186 +65,227 @@ def diagnose(packet, analysis):
     ]
 
     # ==========================================================
-    # 4. THERMAL DIAGNOSIS
+    # EVIDENCE
+    # ==========================================================
+
+    evidence = {
+        "thermal": 0.0,
+        "power": 0.0,
+        "communication": 0.0,
+        "attitude": 0.0,
+    }
+
+    reasons = {
+        "thermal": [],
+        "power": [],
+        "communication": [],
+        "attitude": [],
+    }
+
+    # ==========================================================
+    # THERMAL
     # ==========================================================
 
     temperature_deviation = (
         temperature - temperature_mean
     )
 
-    # Critical thermal condition.
-    #
-    # Example:
-    # temperature = 52°C
-    # rolling mean = 30°C
-    #
-    # Large deviation + high absolute temperature
-    # strongly indicates a thermal problem.
+    if temperature > 45:
+        evidence["thermal"] += 1.0
 
-    if (
-        temperature > 45
-        or temperature_deviation > 5
-    ):
-        return {
-            "subsystem": "thermal",
-            "severity": "critical",
-            "reason": (
-                "Temperature is significantly above "
-                "its recent 20-sample baseline."
-            ),
-        }
+        reasons["thermal"].append(
+            f"Temperature is high ({temperature:.2f} °C)."
+        )
 
-    # Warning thermal condition.
+    elif temperature > 35:
+        evidence["thermal"] += 0.5
 
-    if (
-        temperature > 35
-        or temperature_deviation > 3
-    ):
-        return {
-            "subsystem": "thermal",
-            "severity": "warning",
-            "reason": (
-                "Temperature is elevated relative "
-                "to its recent 20-sample baseline."
-            ),
-        }
+        reasons["thermal"].append(
+            f"Temperature is elevated ({temperature:.2f} °C)."
+        )
+
+    if temperature_deviation > 5:
+        evidence["thermal"] += 0.5
+
+        reasons["thermal"].append(
+            f"Temperature is {temperature_deviation:.2f} °C "
+            "above its recent rolling mean."
+        )
 
     # ==========================================================
-    # 5. POWER DIAGNOSIS
+    # POWER
     # ==========================================================
 
-    # Strong combined power fault:
-    #
-    # Voltage ↓
-    # Current ↑
-    # Solar power ↓
+    if battery_voltage < 7.0:
+        evidence["power"] += 1.0
 
-    if (
-        battery_voltage < 7.0
-        and battery_current > 3.0
-        and solar_power < 10.0
-    ):
-        return {
-            "subsystem": "power",
-            "severity": "critical",
-            "reason": (
-                "Battery voltage is low, battery current "
-                "is elevated, and solar power is reduced."
-            ),
-        }
+        reasons["power"].append(
+            f"Battery voltage is low ({battery_voltage:.2f} V)."
+        )
 
-    # Less severe power deviation.
+    elif battery_voltage < 7.5:
+        evidence["power"] += 0.5
 
-    if (
-        battery_voltage < 7.5
-        or battery_current > 3.0
-        or solar_power < 10.0
-    ):
-        return {
-            "subsystem": "power",
-            "severity": "warning",
-            "reason": (
-                "Power telemetry has deviated "
-                "from nominal operating conditions."
-            ),
-        }
+        reasons["power"].append(
+            f"Battery voltage is reduced ({battery_voltage:.2f} V)."
+        )
+
+    if battery_current > 3.0:
+        evidence["power"] += 0.75
+
+        reasons["power"].append(
+            f"Battery current is elevated ({battery_current:.2f} A)."
+        )
+
+    if solar_power < 10.0:
+        evidence["power"] += 0.75
+
+        reasons["power"].append(
+            f"Solar power is low ({solar_power:.2f} W)."
+        )
 
     # ==========================================================
-    # 6. COMMUNICATION DIAGNOSIS
+    # COMMUNICATION
     # ==========================================================
-
-    # Signal strength becomes more negative when
-    # communication quality deteriorates.
 
     signal_degradation = (
         signal_strength < -85
         or (
-            signal_strength - signal_strength_mean
-            < -10
+            signal_strength - signal_strength_mean < -10
         )
     )
-
-    # packet_loss is represented as a percentage.
-    #
-    # 0.5 = 0.5%
-    # 10  = 10%
-    # 30  = 30%
 
     packet_loss_degradation = (
         packet_loss > 10
         or (
-            packet_loss - packet_loss_mean
-            > 5
+            packet_loss - packet_loss_mean > 5
         )
     )
 
-    # Strong communication fault:
-    #
-    # Signal ↓
-    # Packet loss ↑
+    if signal_degradation:
+        evidence["communication"] += 1.0
 
-    if (
-        signal_degradation
-        and packet_loss_degradation
-    ):
+        reasons["communication"].append(
+            f"Signal strength is weak ({signal_strength:.2f} dBm)."
+        )
+
+    if packet_loss_degradation:
+        evidence["communication"] += 1.0
+
+        reasons["communication"].append(
+            f"Packet loss is high ({packet_loss:.2f}%)."
+        )
+
+    # ==========================================================
+    # ATTITUDE
+    # ==========================================================
+
+    gyro_values = {
+        "gyro_x": gyro_x,
+        "gyro_y": gyro_y,
+        "gyro_z": gyro_z,
+    }
+
+    for axis, value in gyro_values.items():
+
+        absolute_value = abs(value)
+
+        if absolute_value > 1.0:
+
+            evidence["attitude"] += 1.0
+
+            reasons["attitude"].append(
+                f"{axis} is abnormal ({value:.2f})."
+            )
+
+        elif absolute_value > 0.5:
+
+            evidence["attitude"] += 0.5
+
+            reasons["attitude"].append(
+                f"{axis} is elevated ({value:.2f})."
+            )
+
+    # ==========================================================
+    # FIND AFFECTED SUBSYSTEMS
+    # ==========================================================
+
+    affected_subsystems = [
+        subsystem
+        for subsystem, score in evidence.items()
+        if score > 0
+    ]
+
+    # ==========================================================
+    # UNKNOWN ANOMALY
+    # ==========================================================
+
+    if not affected_subsystems:
         return {
-            "subsystem": "communication",
-            "severity": "critical",
-            "reason": (
-                "Signal strength has degraded while "
-                "packet loss has increased significantly."
-            ),
-        }
-
-    # Partial communication degradation.
-
-    if (
-        signal_degradation
-        or packet_loss_degradation
-    ):
-        return {
-            "subsystem": "communication",
+            "subsystem": "unknown",
+            "affected_subsystems": [],
             "severity": "warning",
-            "reason": (
-                "Communication telemetry has "
-                "deviated from its recent baseline."
-            ),
+            "confidence": 0.0,
+            "evidence": evidence,
+            "reasons": reasons,
         }
 
     # ==========================================================
-    # 7. ATTITUDE DIAGNOSIS
+    # PRIMARY SUBSYSTEM
     # ==========================================================
 
-    # Large angular velocity indicates abnormal
-    # spacecraft rotation.
+    # Highest evidence score becomes the primary subsystem.
 
-    if (
-        abs(gyro_x) > 1.0
-        or abs(gyro_y) > 1.0
-        or abs(gyro_z) > 1.0
-    ):
-        return {
-            "subsystem": "attitude",
-            "severity": "critical",
-            "reason": (
-                "Angular velocity indicates "
-                "abnormal spacecraft rotation."
-            ),
-        }
+    primary_subsystem = max(
+        affected_subsystems,
+        key=lambda subsystem: evidence[subsystem],
+    )
 
     # ==========================================================
-    # 8. UNKNOWN ANOMALY
+    # SEVERITY
     # ==========================================================
 
-    # ML detected something abnormal, but none of
-    # our subsystem rules matched.
+    max_evidence = max(
+        evidence[subsystem]
+        for subsystem in affected_subsystems
+    )
+
+    # Multiple affected subsystems indicate a more serious
+    # spacecraft-level event.
+
+    if len(affected_subsystems) >= 3:
+        severity = "critical"
+
+    elif max_evidence >= 2.0:
+        severity = "critical"
+
+    elif max_evidence >= 1.0:
+        severity = "warning"
+
+    else:
+        severity = "low"
+
+    # ==========================================================
+    # CONFIDENCE
+    # ==========================================================
+
+    # Confidence reflects strength of telemetry evidence,
+    # not model probability.
+
+    if max_evidence >= 2.0:
+        confidence = 0.9
+
+    elif max_evidence >= 1.0:
+        confidence = 0.8
+
+    else:
+        confidence = 0.6
 
     return {
-        "subsystem": "unknown",
-        "severity": "warning",
-        "reason": (
-            "Anomalous telemetry was detected, "
-            "but no subsystem-specific rule "
-            "was triggered."
-        ),
+        "subsystem": primary_subsystem,
+        "affected_subsystems": affected_subsystems,
+        "severity": severity,
+        "confidence": confidence,
+        "evidence": evidence,
+        "reasons": reasons,
     }

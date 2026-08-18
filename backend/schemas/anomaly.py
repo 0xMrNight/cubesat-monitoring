@@ -1,5 +1,16 @@
-from typing import Optional
 from pydantic import BaseModel
+
+
+class Diagnosis(BaseModel):
+    subsystem: str | None
+    affected_subsystems: list[str]
+
+    severity: str
+    confidence: float
+
+    evidence: dict[str, float]
+    reasons: dict[str, list[str]]
+
 
 class AnomalyResult(BaseModel):
     anomaly: bool
@@ -9,5 +20,4 @@ class AnomalyResult(BaseModel):
     signal_strength_rolling_mean: float
     packet_loss_rolling_mean: float
 
-    subsystem: Optional[str] = None
-    severity: Optional[str] = None
+    diagnosis: Diagnosis | None = None

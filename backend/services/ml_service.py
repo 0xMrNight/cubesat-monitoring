@@ -3,6 +3,7 @@ from collections import deque
 
 import joblib
 import numpy as np
+import pandas as pd
 
 from schemas.telemetry import TelemetryPacket
 
@@ -133,7 +134,12 @@ class MLService:
 
         X = self._build_feature_vector(packet)
 
-        X_scaled = self.scaler.transform(X)
+        X_df = pd.DataFrame(
+            X,
+            columns=FEATURES,
+        )
+
+        X_scaled = self.scaler.transform(X_df)
 
         # Isolation Forest decision function
         anomaly_score = float(
