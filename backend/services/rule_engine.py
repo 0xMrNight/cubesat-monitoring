@@ -1,14 +1,30 @@
 def diagnose(packet, analysis):
     """
-    Analyze anomalous telemetry and identify all affected
-    spacecraft subsystems.
+    Deterministic evidence engine.
 
-    The ML model is authoritative for anomaly detection.
-    This rule engine only interprets the telemetry evidence.
+    Workflow:
+
+        ML says NORMAL
+            ↓
+        NORMAL
+
+        ML says ANOMALY
+            ↓
+        Check telemetry thresholds
+            ↓
+        Evidence found
+            → Confirmed ANOMALY
+
+        No evidence found
+            → NORMAL
+
+    The ML model detects statistical abnormality.
+    This rule engine confirms whether known telemetry
+    thresholds indicate an actual subsystem anomaly.
     """
 
     # ==========================================================
-    # NORMAL TELEMETRY
+    # NORMAL TELEMETRY FROM ML
     # ==========================================================
 
     if not analysis["anomaly"]:
@@ -49,7 +65,7 @@ def diagnose(packet, analysis):
     gyro_z = packet.gyro_z
 
     # ==========================================================
-    # ROLLING FEATURES FROM V2.2
+    # V2.2 ROLLING FEATURES
     # ==========================================================
 
     temperature_mean = analysis[
@@ -217,14 +233,15 @@ def diagnose(packet, analysis):
     ]
 
     # ==========================================================
-    # UNKNOWN ANOMALY
+    # ML ANOMALY BUT NO DETERMINISTIC EVIDENCE
     # ==========================================================
 
     if not affected_subsystems:
+
         return {
-            "subsystem": "unknown",
+            "subsystem": None,
             "affected_subsystems": [],
-            "severity": "warning",
+            "severity": "normal",
             "confidence": 0.0,
             "evidence": evidence,
             "reasons": reasons,
@@ -233,8 +250,6 @@ def diagnose(packet, analysis):
     # ==========================================================
     # PRIMARY SUBSYSTEM
     # ==========================================================
-
-    # Highest evidence score becomes the primary subsystem.
 
     primary_subsystem = max(
         affected_subsystems,
@@ -249,9 +264,6 @@ def diagnose(packet, analysis):
         evidence[subsystem]
         for subsystem in affected_subsystems
     )
-
-    # Multiple affected subsystems indicate a more serious
-    # spacecraft-level event.
 
     if len(affected_subsystems) >= 3:
         severity = "critical"
@@ -269,9 +281,6 @@ def diagnose(packet, analysis):
     # CONFIDENCE
     # ==========================================================
 
-    # Confidence reflects strength of telemetry evidence,
-    # not model probability.
-
     if max_evidence >= 2.0:
         confidence = 0.9
 
@@ -280,6 +289,10 @@ def diagnose(packet, analysis):
 
     else:
         confidence = 0.6
+
+    # ==========================================================
+    # CONFIRMED ANOMALY
+    # ==========================================================
 
     return {
         "subsystem": primary_subsystem,

@@ -26,7 +26,7 @@ FEATURES = [
 class MLService:
     """Inference service for Isolation Forest model."""
 
-    ANOMALY_THRESHOLD = 0.0
+    ANOMALY_THRESHOLD = -0.01
     ROLLING_WINDOW = 20
 
     def __init__(
