@@ -74,7 +74,7 @@ function createLocalAnalysis(packet) {
   if (packet.temperature > 70) anomalies.push({ metric: "temperature", value: packet.temperature, severity: "critical", recommended_action: "Enter thermal-safe mode" });
   if (packet.battery_voltage < 6.5) anomalies.push({ metric: "battery_voltage", value: packet.battery_voltage, severity: "critical", recommended_action: "Reduce non-essential loads" });
   if (packet.signal_strength < -90 || packet.packet_loss > 20) anomalies.push({ metric: "signal_strength", value: packet.signal_strength, severity: "warning", recommended_action: "Reacquire ground station link" });
-  if (Math.max(Math.abs(packet.gyro_x), Math.abs(packet.gyro_y), Math.abs(packet.gyro_z)) > 5) anomalies.push({ metric: "gyro_x", value: packet.gyro_x, severity: "critical", recommended_action: "Switch to attitude-safe mode" });
+  if (Math.max(Math.abs(packet.gyro_x), Math.abs(packet.gyro_y), Math.abs(packet.gyro_z)) > 1) anomalies.push({ metric: "gyro_x", value: packet.gyro_x, severity: "critical", recommended_action: "Switch to attitude-safe mode" });
 
   return {
     anomaly_count: anomalies.length,
@@ -104,6 +104,244 @@ function inferAnomalyState(analysis) {
   if (metrics.some((metric) => ["signal_strength", "packet_loss"].includes(metric))) return "signal_loss";
   if (metrics.some((metric) => ["battery_voltage", "battery_current", "solar_power"].includes(metric))) return "power_failure";
   if (metrics.some((metric) => metric.startsWith("gyro"))) return "unstable_motion";
+  return "normal";
+}
+
+async function analyzeTelemetry(telemetry) {
+  // 1. Deterministic anomaly analysis
+  const analysisResponse = await fetch(`${API_BASE}/anomalies/analyze`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(telemetry),
+  });
+
+  if (!analysisResponse.ok) {
+    throw new Error(`Telemetry analysis failed: ${analysisResponse.status}`);
+  }
+
+  const analysis = await analysisResponse.json();
+
+  // 2. Normal telemetry → no Mission Agent call
+  if (!analysis.anomaly) {
+    return {
+      analysis,
+      agent: null,
+    };
+  }
+
+  // 3. Authoritative diagnosis from rule engine
+  const diagnosis = analysis.diagnosis || {};
+
+  // 4. Ask Mission Agent for explanation/recommendation
+  const agentResponse = await fetch(`${API_BASE}/agent/recommend`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      anomaly: analysis.anomaly,
+      anomaly_score: analysis.anomaly_score,
+
+      subsystem: diagnosis.subsystem,
+      affected_subsystems: diagnosis.affected_subsystems,
+      severity: diagnosis.severity,
+      confidence: diagnosis.confidence,
+      evidence: diagnosis.evidence,
+      reasons: diagnosis.reasons,
+
+      temperature: telemetry.temperature,
+      battery_voltage: telemetry.battery_voltage,
+      battery_current: telemetry.battery_current,
+      solar_power: telemetry.solar_power,
+      signal_strength: telemetry.signal_strength,
+      packet_loss: telemetry.packet_loss,
+      gyro_x: telemetry.gyro_x,
+      gyro_y: telemetry.gyro_y,
+      gyro_z: telemetry.gyro_z,
+    }),
+  });
+
+  if (!agentResponse.ok) {
+    throw new Error(`Agent request failed: ${agentResponse.status}`);
+  }
+
+  const agent = await agentResponse.json();
+
+  return {
+    analysis,
+    agent,
+  };
+}
+
+
+/*
+ * Converts the new backend response into the shape
+ * expected by the existing dashboard components.
+ */
+function normalizeBackendAnalysis(result) {
+  const analysis = result?.analysis || {};
+  const diagnosis = analysis?.diagnosis || {};
+  const agent = result?.agent || null;
+
+  const anomaly = Boolean(analysis.anomaly);
+
+  const reasons = Array.isArray(diagnosis.reasons)
+    ? diagnosis.reasons
+    : diagnosis.reasons
+      ? [diagnosis.reasons]
+      : [];
+
+  const evidence = Array.isArray(diagnosis.evidence)
+    ? diagnosis.evidence
+    : diagnosis.evidence
+      ? [diagnosis.evidence]
+      : [];
+
+  const affectedSubsystems = Array.isArray(diagnosis.affected_subsystems)
+    ? diagnosis.affected_subsystems
+    : diagnosis.affected_subsystems
+      ? [diagnosis.affected_subsystems]
+      : [];
+
+  /*
+   * The backend may return different field names for the
+   * Mission Agent response. Support the common possibilities
+   * without coupling the UI too tightly to the agent.
+   */
+  const agentSummary =
+    agent?.summary ||
+    agent?.explanation ||
+    agent?.recommendation ||
+    agent?.message ||
+    "";
+
+  const agentActions = Array.isArray(agent?.actions)
+    ? agent.actions
+    : agent?.actions
+      ? [agent.actions]
+      : [];
+
+  const actions = [
+    ...agentActions,
+    ...(Array.isArray(diagnosis.recommended_actions)
+      ? diagnosis.recommended_actions
+      : []),
+  ];
+
+  const allReasons = [...reasons, ...evidence];
+
+  const anomalies = anomaly
+    ? [
+      {
+        metric: diagnosis.subsystem || "telemetry",
+        value: analysis.anomaly_score,
+        severity: diagnosis.severity || "warning",
+        recommended_action:
+          actions[0] || "Follow Mission Agent recommendation",
+        reasons: allReasons,
+      },
+    ]
+    : [];
+
+  const severity = diagnosis.severity || (anomaly ? "warning" : "none");
+
+  return {
+    anomaly_count: anomaly ? 1 : 0,
+
+    anomalies,
+
+    /*
+     * Keep the raw backend response available.
+     * This is useful if you later want to display
+     * confidence, evidence, anomaly score, etc.
+     */
+    backend: {
+      analysis,
+      diagnosis,
+      agent,
+    },
+
+    ml: {
+      model_status: "backend",
+      is_anomaly: anomaly,
+      score: analysis.anomaly_score ?? 0,
+    },
+
+    alert: {
+      status: anomaly ? "alert" : "nominal",
+      priority: anomaly ? severity : "none",
+
+      actions: [...new Set(actions)],
+
+      summary:
+        agentSummary ||
+        diagnosis.reasons?.[0] ||
+        (anomaly
+          ? "Anomaly detected in spacecraft telemetry."
+          : "All monitored values are within configured limits."),
+    },
+  };
+}
+
+
+/*
+ * Convert the authoritative backend diagnosis into
+ * one of the visual states used by Satellite3D.
+ */
+function inferBackendAnomalyState(analysis) {
+  if (!analysis?.anomaly) {
+    return "normal";
+  }
+
+  const diagnosis = analysis.diagnosis || {};
+
+  const subsystem = String(
+    diagnosis.subsystem || ""
+  ).toLowerCase();
+
+  const affected = (
+    Array.isArray(diagnosis.affected_subsystems)
+      ? diagnosis.affected_subsystems
+      : []
+  )
+    .map((value) => String(value).toLowerCase())
+    .join(" ");
+
+  const combined = `${subsystem} ${affected}`;
+
+  if (
+    combined.includes("thermal") ||
+    combined.includes("temperature")
+  ) {
+    return "overheating";
+  }
+
+  if (
+    combined.includes("communication") ||
+    combined.includes("comms") ||
+    combined.includes("signal")
+  ) {
+    return "signal_loss";
+  }
+
+  if (
+    combined.includes("attitude") ||
+    combined.includes("adcs") ||
+    combined.includes("gyro")
+  ) {
+    return "unstable_motion";
+  }
+
+  if (
+    combined.includes("power") ||
+    combined.includes("battery") ||
+    combined.includes("solar")
+  ) {
+    return "power_failure";
+  }
+
   return "normal";
 }
 
@@ -213,7 +451,15 @@ function App() {
   const sendLock = useRef(false);
 
   const isAlert = analysis.anomaly_count > 0;
-  const subsystem = getSubsystem(analysis.anomalies || []);
+  const rawSubsystem =
+    analysis.backend?.diagnosis?.subsystem ||
+    getSubsystem(analysis.anomalies || []);
+
+  const subsystem =
+    !rawSubsystem ||
+      rawSubsystem.toLowerCase() === "unknown"
+      ? "Unclassified"
+      : rawSubsystem;
   const severity = analysis.alert?.priority || "none";
 
   const handleInteraction = useCallback((intensity) => {
@@ -222,32 +468,80 @@ function App() {
 
   const sendTelemetry = useCallback(async () => {
     if (sendLock.current) return;
+
     sendLock.current = true;
+
     const packet = createTelemetry(selectedFault, agitation);
+
     let nextAnalysis = createLocalAnalysis(packet);
+    let nextAnomalyState = "normal";
 
     try {
-      const response = await fetch(`${API_BASE}/telemetry`, {
+      /*
+       * ---------------------------------------------------------
+       * STEP 1 — Send telemetry to backend
+       * ---------------------------------------------------------
+       */
+      const telemetryResponse = await fetch(`${API_BASE}/telemetry`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify(packet),
       });
-      if (!response.ok) throw new Error(`API ${response.status}`);
-      const payload = await response.json();
-      nextAnalysis = payload.analysis || nextAnalysis;
-      // BACKEND INTEGRATION: map FastAPI anomaly response to this visual state.
-      // Replace this adapter with the backend's explicit anomalyState when available.
-      setAnomalyState(
-        payload.analysis?.anomaly_count > 0
-          ? inferAnomalyState(payload.analysis)
-          : "normal",
-      );
+
+      if (!telemetryResponse.ok) {
+        throw new Error(`Telemetry API ${telemetryResponse.status}`);
+      }
+
+      /*
+       * ---------------------------------------------------------
+       * STEP 2 — Analyze the same telemetry
+       * ---------------------------------------------------------
+       */
+      const result = await analyzeTelemetry(packet);
+
+      /*
+       * ---------------------------------------------------------
+       * STEP 3 — Convert backend response into dashboard format
+       * ---------------------------------------------------------
+       */
+      nextAnalysis = normalizeBackendAnalysis(result);
+
+      /*
+       * ---------------------------------------------------------
+       * STEP 4 — Use backend diagnosis as the authoritative
+       * source for the visual satellite state.
+       * ---------------------------------------------------------
+       */
+      nextAnomalyState = inferBackendAnomalyState(result.analysis);
+
+      setAnomalyState(nextAnomalyState);
+
       setApiState("online");
       setLastError("");
-    } catch {
+    } catch (error) {
+      console.error("Telemetry pipeline failed:", error);
+
+      /*
+       * Backend unavailable:
+       * keep the dashboard functional using local analysis.
+       */
+      nextAnalysis = createLocalAnalysis(packet);
+
+      nextAnomalyState = inferAnomalyState(nextAnalysis);
+
+      setAnomalyState(nextAnomalyState);
+
       setApiState("offline");
-      setLastError("Backend unavailable — local simulation continues");
+      setLastError(
+        "Backend unavailable — local simulation continues"
+      );
     } finally {
+      /*
+       * Always update the live telemetry display,
+       * regardless of backend availability.
+       */
       setTelemetry({
         batteryVoltage: packet.battery_voltage,
         batteryCurrent: packet.battery_current,
@@ -259,10 +553,17 @@ function App() {
         gyroY: packet.gyro_y,
         gyroZ: packet.gyro_z,
       });
+
       setAnalysis(nextAnalysis);
-      setHistory((values) => [...values.slice(-11), packet.temperature]);
+
+      setHistory((values) => [
+        ...values.slice(-11),
+        packet.temperature,
+      ]);
+
       setPacketCount((value) => value + 1);
       setLastSent(new Date());
+
       sendLock.current = false;
     }
   }, [agitation, selectedFault]);
@@ -386,10 +687,75 @@ function App() {
 
         <section className="lower-grid">
           <div className="section-block subsystem-block"><div className="section-header compact"><div><span className="panel-kicker">SUBSYSTEM HEALTH</span><h3>Mission systems</h3></div><span className={`mini-status ${isAlert ? "alert" : "nominal"}`}>{isAlert ? "ATTENTION" : "NOMINAL"}</span></div><div className="subsystem-grid"><SubsystemCard name="Power" detail="BUS & GENERATION" value={telemetry.batteryVoltage < 6.5 ? "DEGRADED" : "NOMINAL"} tone={telemetry.batteryVoltage < 6.5 ? "rose" : "mint"} icon="◒" /><SubsystemCard name="Thermal" detail="CPU / PAYLOAD" value={telemetry.temperature > 70 ? "CRITICAL" : "NOMINAL"} tone={telemetry.temperature > 70 ? "rose" : "amber"} icon="◉" /><SubsystemCard name="Comms" detail="S-BAND DOWNLINK" value={telemetry.packetLoss > 20 ? "DEGRADED" : "NOMINAL"} tone={telemetry.packetLoss > 20 ? "rose" : "cyan"} icon="◌" /><SubsystemCard name="Attitude" detail="ADCS / GYROS" value={subsystem === "Attitude" ? "UNSTABLE" : "NOMINAL"} tone={subsystem === "Attitude" ? "rose" : "violet"} icon="✧" /></div></div>
-          <div className="section-block advisor-block"><div className="section-header compact"><div><span className="panel-kicker">MISSION ADVISOR / RULE ENGINE</span><h3>Response brief</h3></div><span className={`severity-tag ${severity}`}>{severity === "none" ? "CLEAR" : severity.toUpperCase()}</span></div><div className="advisor-content"><div className="advisor-orb">{isAlert ? "!" : "✓"}</div><div><p className="advisor-heading">{isAlert ? `${subsystem} subsystem requires attention` : "Spacecraft is tracking nominally"}</p><p className="advisor-copy">{analysis.alert?.summary || "Awaiting first telemetry packet from the simulator."}</p>{analysis.alert?.actions?.length > 0 && <div className="action-list">{analysis.alert.actions.slice(0, 2).map((action) => <span key={action}>→ {action}</span>)}</div>}</div></div></div>
+          <div className="section-block advisor-block"><div className="section-header compact"><div><span className="panel-kicker">MISSION ADVISOR / RULE ENGINE</span><h3>Response brief</h3></div><span className={`severity-tag ${severity}`}>{severity === "none" ? "CLEAR" : severity.toUpperCase()}</span></div>
+            <div className="advisor-content">
+              <div className="advisor-orb">
+                {isAlert ? "!" : "✓"}
+              </div>
+
+              <div>
+                <p className="advisor-heading">
+                  {isAlert
+                    ? `${subsystem} anomaly detected`
+                    : "Spacecraft is tracking nominally"}
+                </p>
+
+                <p className="advisor-copy">
+                  {analysis.alert?.summary ||
+                    "Awaiting first telemetry packet from the simulator."}
+                </p>
+
+                {analysis.alert?.actions?.length > 0 && (
+                  <div className="action-list">
+                    {analysis.alert.actions
+                      .slice(0, 3)
+                      .map((action, index) => (
+                        <span key={`${action}-${index}`}>
+                          → {action}
+                        </span>
+                      ))}
+                  </div>
+                )}
+
+                {isAlert &&
+                  analysis.backend?.diagnosis?.confidence != null && (
+                    <div className="advisor-confidence">
+                      CONFIDENCE{" "}
+                      <strong>
+                        {(
+                          Number(analysis.backend.diagnosis.confidence) * 100
+                        ).toFixed(0)}
+                        %
+                      </strong>
+                    </div>
+                  )}
+              </div>
+            </div>
+          </div>
         </section>
 
-        <section className="section-block command-block"><div className="section-header compact"><div><span className="panel-kicker">SIMULATION CONTROL / OPERATOR INPUT</span><h3>Inject a scenario</h3></div><span className="command-note">Packets are sent to the existing FastAPI backend</span></div><div className="fault-controls">{FAULTS.map((fault) => <button key={fault.id} className={`fault-button ${fault.accent} ${anomalyState === fault.anomalyState ? "selected" : ""}`} onClick={() => { setSelectedFault(fault.id); setAnomalyState(fault.anomalyState); }}><span className="fault-icon">{fault.id === "normal" ? "✓" : fault.id === "thermal" ? "◉" : fault.id === "power" ? "↯" : fault.id === "communication" ? "⌁" : "✧"}</span><span><strong>{fault.shortLabel}</strong><small>{fault.hint}</small></span><span className="selection-mark">{anomalyState === fault.anomalyState ? "ACTIVE" : ""}</span></button>)}</div><div className="command-footer"><span className="backend-message">{lastError || (apiState === "online" ? "Backend link healthy · POST /telemetry" : "Local fallback active · connect FastAPI on port 8000")}</span><span className="scenario-readout">VISUAL STATE <strong>{anomalyState.toUpperCase()}</strong></span></div></section>
+        <section className="section-block command-block"><div className="section-header compact"><div><span className="panel-kicker">SIMULATION CONTROL / OPERATOR INPUT</span><h3>Inject a scenario</h3></div><span className="command-note">Packets are sent to the existing FastAPI backend</span></div><div className="fault-controls">{FAULTS.map((fault) => 
+          <button
+            key={fault.id}
+            className={`fault-button ${fault.accent} ${selectedFault === fault.id ? "selected" : ""
+              }`}
+            onClick={() => {
+              setSelectedFault(fault.id);
+
+              if (fault.id === "normal") {
+                setAnomalyState("normal");
+              }
+            }}
+          >
+            <span className="fault-icon">{fault.id === "normal" ? "✓" : fault.id === "thermal" ? "◉" : fault.id === "power" ? "↯" : fault.id === "communication" ? "⌁" : "✧"}</span><span><strong>{fault.shortLabel}</strong><small>{fault.hint}</small></span><span className="selection-mark">{selectedFault === fault.id ? "ACTIVE" : ""}</span></button>)}</div><div className="command-footer">
+            <span className="backend-message">
+              {lastError ||
+                (apiState === "online"
+                  ? "Backend link healthy · telemetry → anomaly engine → mission agent"
+                  : "Local fallback active · connect FastAPI on port 8000")}
+            </span>
+              <span className="scenario-readout">VISUAL STATE <strong>{anomalyState.toUpperCase()}</strong></span>
+            </div></section>
       </main>
       <footer className="footer"><span>ODYSSEY 01 · CUBESAT TELEMETRY SIMULATOR</span><span>FASTAPI LINK <i className={apiState} /> · BUILD 0.4.2</span></footer>
     </div>
