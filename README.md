@@ -3,6 +3,8 @@
 A real-time CubeSat monitoring system that analyzes simulated telemetry and detects abnormal spacecraft behavior.
 It uses an Isolation Forest model for anomaly detection and a rule-based system to identify the affected subsystem.
 
+Built for Parallax Hackathon 2026 conducted at VIT Chennai.
+
 ## Features
 
 * Real-time telemetry simulation
