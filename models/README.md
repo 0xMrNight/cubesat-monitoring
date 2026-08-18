@@ -1,4 +1,4 @@
-Machine Learning Models
+**Machine Learning Models**
 
 The models folder contains the trained machine-learning artifacts used for CubeSat anomaly detection.
 
